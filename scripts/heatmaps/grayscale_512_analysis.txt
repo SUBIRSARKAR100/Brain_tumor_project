@@ -1,0 +1,17 @@
+Image: scripts/test_inputs/grayscale_512.png
+Prediction: No Brain Tumor
+Confidence: 94.03%
+
+=== Grad-CAM Analysis ===
+Tumor Region Found: True
+Activation Area: 10.00% of image
+Mean Activation Intensity: 0.8838
+Max Activation Intensity: 0.9981
+Confidence Level: High
+Bounding Box (pixels): Y=[47, 134], X=[77, 158]
+Tumor Centroid (pixels): (89.3, 116.7)
+
+Interpretation:
+The heatmap shows regions the model considers important for its classification.
+Blue -> Green -> Yellow -> Red: Low to High activation (likely tumor regions).
+The bounding box and centroid show the spatial location of detected activation.

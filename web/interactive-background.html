@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Interactive Background — Particle / Wave + Corner Anti-Gravity</title>
+  <style>
+    /* Full-screen demo container */
+    html,body{height:100%;margin:0;background:linear-gradient(160deg,#081029 0%, #04102a 60%, #061023 100%);font-family:Inter, system-ui, Arial}
+    .demo-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#eaf6ff;pointer-events:none}
+    .demo-card{width:min(820px,86vw);padding:28px;border-radius:16px;background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02));backdrop-filter: blur(6px);box-shadow: 0 6px 30px rgba(2,6,23,0.6);pointer-events:auto}
+    .demo-card h1{margin:0 0 8px;font-weight:700;font-size:20px;letter-spacing:0.2px}
+    .demo-card p{margin:0;color:rgba(230,240,255,0.9);opacity:0.9}
+    .controls{display:flex;gap:12px;margin-top:14px;align-items:center}
+    label{font-size:13px;opacity:0.85}
+    .btn{pointer-events:auto;display:inline-block;padding:6px 10px;border-radius:10px;background:linear-gradient(90deg,#39f 0,#7ef 60%);color: #021026;text-decoration:none;font-weight:600;box-shadow:0 6px 20px rgba(60,160,255,0.15);border:0}
+    /* Canvas placed behind UI */
+    #bgCanvas{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
+    /* Corner hotspots — clickable invisible zones that show a soft pulse */
+    .corner-hit{position:fixed;z-index:2;pointer-events:auto;width:120px;height:120px;border-radius:14px;display:flex;align-items:center;justify-content:center;opacity:0.22;transform:translateZ(0);}
+    .corner-hit:active{opacity:0.6}
+    .corner-hit .pulse{position:absolute;width:64px;height:64px;border-radius:999px;background:radial-gradient(circle at 40% 30%, rgba(120,200,255,0.32), rgba(80,140,220,0.12) 40%, transparent 70%);filter:blur(8px);transition:transform .45s cubic-bezier(.2,.8,.2,1), opacity .45s ease;opacity:0.85;pointer-events:none}
+    .corner-hit:hover .pulse{transform:scale(1.25);opacity:1}
+    .corner-hit.pulse-animate .pulse{transform:scale(2.4);opacity:0.99;transition:transform .36s cubic-bezier(.23,.9,.27,1),opacity .6s ease}
+    .corner-hit.top-left{left:8px;top:8px}
+    .corner-hit.top-right{right:8px;top:8px}
+    .corner-hit.bottom-left{left:8px;bottom:8px}
+    .corner-hit.bottom-right{right:8px;bottom:8px}
+
+    /* minimal responsive tweak */
+    @media (max-width:640px){ .demo-card{width:92vw;padding:18px;border-radius:12px} }
+  </style>
+</head>
+<body>
+  <canvas id="bgCanvas"></canvas>
+
+  <!-- interactive corner hotspots like Google anti-gravity: clickable & animated -->
+  <div id="corner-tl" class="corner-hit top-left" role="button" aria-label="Top left corner">
+    <div class="pulse"></div>
+  </div>
+  <div id="corner-tr" class="corner-hit top-right" role="button" aria-label="Top right corner">
+    <div class="pulse"></div>
+  </div>
+  <div id="corner-bl" class="corner-hit bottom-left" role="button" aria-label="Bottom left corner">
+    <div class="pulse"></div>
+  </div>
+  <div id="corner-br" class="corner-hit bottom-right" role="button" aria-label="Bottom right corner">
+    <div class="pulse"></div>
+  </div>
+
+  <div class="demo-overlay">
+    <div class="demo-card" style="pointer-events:auto;"> 
+      <h1>Interactive, responsive background</h1>
+      <p>Particles, waves and soft glow react to pointer, and corners kick off gentle anti-gravity ripples for a playful, futuristic feel.</p>
+      <div class="controls">
+        <label style="width:200px">Particles / Motion strength: <span id="strengthLbl">1.0</span></label>
+        <input id="strength" type="range" min="0" max="2" step="0.01" value="1" style="width:260px;margin-left:6px"/>
+        <a class="btn" id="resetBtn">Reset</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Interactive background demo — Canvas 2D, smooth particles and wave distortion
+    (function(){
+      const canvas = document.getElementById('bgCanvas');
+      const ctx = canvas.getContext('2d', { alpha: true });
+
+      let W = canvas.width = innerWidth;
+      let H = canvas.height = innerHeight;
+      const DPR = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = W * DPR; canvas.height = H * DPR; canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+      ctx.scale(DPR, DPR);
+
+      // Parameters
+      let particleCount = Math.round(Math.max(80, Math.min(250, (W * H) / 24000)));
+      let strength = 1.0;
+
+      document.getElementById('strength').addEventListener('input', e => { strength = parseFloat(e.target.value); document.getElementById('strengthLbl').innerText = strength.toFixed(2); })
+      document.getElementById('resetBtn').addEventListener('click', () => { init(); })
+
+      // Pointer state
+      const pointer = {x: W/2, y: H/2, vx:0, vy:0, smoothing:0.15, down:false};
+      window.addEventListener('pointermove', (e)=>{ pointer.vx = e.clientX - pointer.x; pointer.vy = e.clientY - pointer.y; pointer.x = e.clientX; pointer.y = e.clientY; });
+      window.addEventListener('pointerdown', (e)=>{ pointer.down = true; createBurst(e.clientX, e.clientY); });
+      window.addEventListener('pointerup', ()=>{ pointer.down = false; });
+
+      // Corner triggers (global click) — ignore if a corner hotspot just fired to avoid double-triggering
+      let lastCornerTriggered = 0;
+      window.addEventListener('click', (e) => {
+        // if a hotspot was recently clicked we avoid duplicate triggers
+        if(performance.now() - lastCornerTriggered < 450) return;
+        const corner = detectCorner(e.clientX, e.clientY);
+        if(corner) cornerBurst(corner);
+      });
+
+      // Attach direct listeners to corner hotspots for a stronger, instant anti-gravity effect
+      const cornerMap = [
+        {id: 'corner-tl', name: 'top-left'},
+        {id: 'corner-tr', name: 'top-right'},
+        {id: 'corner-bl', name: 'bottom-left'},
+        {id: 'corner-br', name: 'bottom-right'},
+      ];
+      cornerMap.forEach(c => {
+        const el = document.getElementById(c.id);
+        if(!el) return;
+        el.addEventListener('pointerdown', (ev) => {
+          ev.stopPropagation();
+          // visible pulse animation
+          el.classList.remove('pulse-animate');
+          // force reflow so animation restarts when rapidly clicked
+          void el.offsetWidth;
+          el.classList.add('pulse-animate');
+          // strong anti-gravity burst when clicking the corner (boost >1)
+          lastCornerTriggered = performance.now();
+          cornerBurst(c.name, 2.6);
+        });
+        // also honor touch / click end visual removal
+        el.addEventListener('pointerup', ()=>{ setTimeout(()=> el.classList.remove('pulse-animate'), 350); });
+      });
+
+      function detectCorner(x,y){
+        const pad = Math.min(140, Math.max(80, Math.sqrt(W*H)*0.02));
+        if(x < pad && y < pad) return 'top-left';
+        if(x > W - pad && y < pad) return 'top-right';
+        if(x < pad && y > H - pad) return 'bottom-left';
+        if(x > W - pad && y > H - pad) return 'bottom-right';
+        return null;
+      }
+
+      // Particle system
+      let particles = [];
+      let flowField = null; // simplified "noise" flow
+      
+      function rand(a,b){return a + Math.random()*(b-a)}
+
+      function init(){
+        W = canvas.width = innerWidth; H = canvas.height = innerHeight;
+        canvas.width = W * DPR; canvas.height = H * DPR; canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+        ctx.scale(DPR, DPR);
+
+        particleCount = Math.round(Math.max(80, Math.min(250, (W * H) / 24000)));
+        particles = [];
+        for(let i=0;i<particleCount;i++){
+          particles.push({
+            x: rand(0,W), y: rand(0,H),
+            vx: rand(-0.1,0.1), vy: rand(-0.05,0.05),
+            r: rand(1.2, 3.6),
+            hue: rand(190,240), alpha: rand(0.18, 0.9),
+            wobble: rand(0.2, 1.8), wobbleA: rand(0.04, 0.18)
+          });
+        }
+      }
+
+      // Some fields and ripples
+      const ripples = [];
+      function createBurst(x,y){
+        ripples.push({x,y,t:0,tMax:1.4,magnitude: rand(10,28) * (1 + strength), type:'soft'});
+        // add local particle impulse
+        const range = 120 * (1 + strength);
+        particles.forEach(p=>{
+          const dx = p.x - x, dy = p.y - y, d2 = dx*dx + dy*dy;
+          if(d2 < range*range){
+            const d = Math.sqrt(d2) + 1e-6;
+            const force = (1 - d/range) * 16 * strength;
+            p.vx += (dx/d) * force * 0.05;
+            p.vy += (dy/d) * force * 0.06 - (6*strength/p.r);
+          }
+        });
+      }
+
+      function cornerBurst(corner, boost=1.0){
+        const margin = 50;
+        let cx = corner.includes('right') ? W - margin : margin;
+        let cy = corner.includes('bottom') ? H - margin : margin;
+        // push a large anti-gravity ripple
+        const magnitudeBase = 50*(1 + strength);
+        ripples.push({x:cx,y:cy,t:0,tMax:2.6 * Math.max(1, boost),magnitude: magnitudeBase * Math.max(1, boost), type:'anti'});
+        // push particles away from corner in a sine-like float
+        particles.forEach(p=>{
+          const dx = p.x - cx, dy = p.y - cy;
+          const d = Math.sqrt(dx*dx + dy*dy) + 1e-6;
+          const away = Math.max(0, (150 - d) / 150);
+          const mult = (1 + strength) * Math.max(1, boost);
+          p.vx += (dx/d) * away * rand(6,26) * mult;
+          p.vy += (dy/d) * away * rand(6,28) * mult * -0.6;
+        });
+      }
+
+      // Animation
+      let last = performance.now();
+      function step(t){
+        const dt = Math.min(40, t - last) * 0.001; last = t;
+
+        // trail background -> motion blur vibe
+        ctx.fillStyle = 'rgba(2,8,14,0.35)';
+        ctx.fillRect(0,0,W,H);
+
+        // subtle lighting gradient
+        const lg = ctx.createLinearGradient(W*0.1,H*0.1,W*0.9,H*0.9);
+        lg.addColorStop(0, 'rgba(10,20,60,0.08)'); lg.addColorStop(1, 'rgba(0,10,24,0.06)');
+        ctx.fillStyle = lg; ctx.fillRect(0,0,W,H);
+
+        // update ripples
+        for(let i=ripples.length-1;i>=0;i--){
+          const r = ripples[i]; r.t += dt * 0.7;
+          if(r.t > r.tMax) ripples.splice(i,1);
+        }
+
+        // pointer attract/repel for smooth parallax
+        particles.forEach(p=>{
+          // movement according to small noise
+          const nx = Math.sin((p.x + (t*0.012*p.wobble))*0.002) * 6;
+          const ny = Math.cos((p.y + (t*0.015*p.wobble))*0.001) * 6;
+          // respond to pointer movement with slight lag
+          const dx = (pointer.x + nx) - p.x;
+          const dy = (pointer.y + ny) - p.y;
+
+          p.vx += dx * 0.0004 * strength;
+          p.vy += dy * 0.00035 * strength;
+
+          // apply velocity + friction
+          p.x += p.vx * (20 * dt);
+          p.y += p.vy * (20 * dt);
+          p.vx *= 0.92; p.vy *= 0.92;
+
+          // keep in bounds with a soft bounce
+          if(p.x < -20) p.x += W + 40;
+          if(p.x > W + 20) p.x -= W + 40;
+          if(p.y < -40) p.y += H + 80;
+          if(p.y > H + 40) p.y -= H + 80;
+        });
+
+        // draw glows and particles with soft blending
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+
+        // draw radial ripples as soft light
+        ripples.forEach(r=>{
+          const progress = r.t / r.tMax;
+          const radius = progress * (80 + r.magnitude * (r.type==='anti'? 2:1));
+          const alpha = (1 - progress) * 0.55 * (r.type==='anti' ? 0.9 : 0.7);
+          const grd = ctx.createRadialGradient(r.x, r.y, 0, r.x, r.y, radius);
+          grd.addColorStop(0, `rgba(120,200,255,${alpha})`);
+          grd.addColorStop(0.6, `rgba(80,140,220,${alpha*0.4})`);
+          grd.addColorStop(1, 'rgba(6,14,30,0)');
+          ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(r.x, r.y, radius, 0, Math.PI*2); ctx.fill();
+        });
+
+        // draw soft particle cores
+        particles.forEach(p=>{
+          // glow rings
+          const glow = Math.min(0.9, p.alpha + 0.1);
+          for(let s=0;s<3;s++){
+            ctx.beginPath(); ctx.fillStyle = `rgba(${Math.round(p.hue+60)},${Math.round(p.hue+100)},255,${0.06 * (3-s) * (1+strength*0.15)})`;
+            ctx.arc(p.x, p.y, p.r * (2.5 - s*0.7) * (1 + 0.12*strength), 0, Math.PI*2);
+            ctx.fill();
+          }
+
+          // solid core
+          ctx.beginPath(); ctx.fillStyle = `rgba(220,235,255,${0.9*p.alpha})`;
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+        });
+
+        ctx.restore();
+
+        // subtle parallax grid / waves (optional)
+        drawSoftWaves(t);
+
+        requestAnimationFrame(step);
+      }
+
+      function drawSoftWaves(t){
+        // create a faint moving wave field using bezier-ish pattern
+        const rows = 10; const cols = Math.max(12, Math.round(W/80));
+        ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(80,130,200,0.04)';
+        for(let i=0;i<rows;i++){
+          const y = (H/(rows-1))*i;
+          ctx.beginPath();
+          for(let j=0;j<=cols;j++){
+            const x = (W/cols)*j;
+            const offset = Math.sin((j*0.17 + i*0.13 + t*0.004) * (1 + 0.12*strength)) * 10 * (i/rows);
+            const px = x + offset;
+            if(j==0) ctx.moveTo(px,y); else ctx.lineTo(px,y);
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ensure focused overlay mask + overlay created in main script (we create mask locally for thumbnails)
+      function getCurrentMaskImage(){
+        // produce a pseudo-mask by thresholding a gaussian-smoothed particle field
+        const mask = new Uint8ClampedArray(W*H);
+        // Draw contributions
+        particles.forEach(p=>{
+          const px = Math.round(p.x), py = Math.round(p.y);
+          const r = Math.round(p.r*8 + (10*strength));
+          for(let dy=-r;dy<=r;dy++){
+            const y = py+dy; if(y<0||y>=H) continue;
+            for(let dx=-r;dx<=r;dx++){
+              const x = px+dx; if(x<0||x>=W) continue;
+              const d2 = dx*dx+dy*dy;
+              if(d2>r*r) continue;
+              const idx = y*W+x; mask[idx] = Math.min(255, mask[idx] + 18);
+            }
+          }
+        });
+        return {mask, width:W, height:H};
+      }
+
+      // responsive
+      window.addEventListener('resize', ()=>{ init(); });
+
+      init(); requestAnimationFrame(step);
+
+    })();
+  </script>
+</body>
+</html>
